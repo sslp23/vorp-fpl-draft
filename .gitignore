@@ -4,5 +4,6 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 .streamlit/
+data/draft_state.json
 .DS_Store
 Thumbs.db

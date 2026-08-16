@@ -7,13 +7,15 @@ once via union-find so transitive matches connect correctly):
   3. fuzzy name match (same team)
   4. fuzzy name match (any team, higher threshold -- covers transfers/typos)
 
-Ranking strategy: sources rank different pool sizes (400/240/199), so a
-raw rank average would unfairly punish players missing from the smaller
-lists. Instead each source's rank is converted to a percentile (rank / pool
-size) before averaging, and the average percentile determines unified_rank.
-Players found in fewer sources are not penalized beyond what their available
-percentiles say -- `sources_count` is carried through as a confidence signal.
+Ranking strategy: sources rank different pool sizes, so each source's rank
+is converted to a percentile (rank / pool size, 0=best) before combining.
+A player a source doesn't rank at all is scored at that source's worst
+percentile (1.0) for that source -- being absent from a source is a penalty,
+not a neutral. The per-source percentiles are then combined as a weighted
+average (SOURCE_WEIGHTS) into unified_score, which determines unified_rank.
+`sources_count` is carried through as a confidence signal.
 """
+import argparse
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -22,11 +24,19 @@ from pathlib import Path
 import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-SOURCES = ["waiverkings", "draftfantasy", "thedraftsociety"]
+ALL_SOURCES = ["waiverkings", "draftfantasy", "thedraftsociety"]
 OUT_PATH = DATA_DIR / "unified.csv"
 
 FUZZY_SAME_TEAM_THRESHOLD = 0.82
 FUZZY_ANY_TEAM_THRESHOLD = 0.90
+
+# Waiver Kings weighted higher than the other two sources.
+SOURCE_WEIGHTS = {"waiverkings": 2.0, "draftfantasy": 1.0, "thedraftsociety": 1.0}
+
+# Percentile assigned for a source that doesn't rank the player at all --
+# 1.0 is that source's own worst-ranked-player percentile, so absence is
+# treated as being dead last, not ignored.
+MISSING_PERCENTILE = 1.0
 
 EXTRA_COLS = ("pts", "price", "xp", "edge", "tsb_pct", "pp90", "ros_pct")
 
@@ -60,9 +70,9 @@ def surname(normalized_name: str) -> str:
     return normalized_name.split(" ")[-1] if normalized_name else ""
 
 
-def load_sources() -> dict[str, pd.DataFrame]:
+def load_sources(sources: list[str]) -> dict[str, pd.DataFrame]:
     frames = {}
-    for src in SOURCES:
+    for src in sources:
         path = DATA_DIR / f"{src}.csv"
         if not path.exists():
             raise FileNotFoundError(f"Missing {path}. Run scripts/{src}_scrape.py first.")
@@ -164,27 +174,32 @@ def match_players(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return records_df
 
 
-def build_unified(records_df: pd.DataFrame, frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    max_rank = {src: frames[src]["rank"].max() for src in SOURCES}
+def build_unified(records_df: pd.DataFrame, frames: dict[str, pd.DataFrame], sources: list[str]) -> pd.DataFrame:
+    max_rank = {src: frames[src]["rank"].max() for src in sources}
 
     rows = []
     for _, group in records_df.groupby("cluster"):
         by_source = {rec["source"]: rec for _, rec in group.iterrows()}
 
-        canon = next(by_source[src] for src in SOURCES if src in by_source)
+        canon = next(by_source[src] for src in sources if src in by_source)
         row = {"player": canon["player"], "team": canon["team"], "position": canon["position"]}
 
-        percentiles = []
-        for src in SOURCES:
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for src in sources:
+            weight = SOURCE_WEIGHTS.get(src, 1.0)
             if src in by_source:
                 r = int(by_source[src]["rank"])
                 row[f"{src}_rank"] = r
-                percentiles.append(r / max_rank[src])
+                percentile = r / max_rank[src]
             else:
                 row[f"{src}_rank"] = pd.NA
+                percentile = MISSING_PERCENTILE
+            weighted_sum += weight * percentile
+            weight_total += weight
 
         row["sources_count"] = len(by_source)
-        row["unified_score"] = sum(percentiles) / len(percentiles)
+        row["unified_score"] = weighted_sum / weight_total
 
         for src, rec in by_source.items():
             for col in EXTRA_COLS:
@@ -202,19 +217,37 @@ def build_unified(records_df: pd.DataFrame, frames: dict[str, pd.DataFrame]) -> 
     return unified
 
 
-def main() -> None:
-    frames = load_sources()
+def run(sources: list[str]) -> pd.DataFrame:
+    frames = load_sources(sources)
     for src, df in frames.items():
         print(f"{src}: {len(df)} players")
 
     records_df = match_players(frames)
-    unified = build_unified(records_df, frames)
+    unified = build_unified(records_df, frames, sources)
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     unified.to_csv(OUT_PATH, index=False)
 
-    print(f"\nUnified: {len(unified)} unique players -> {OUT_PATH}")
+    print(f"\nUnified ({', '.join(sources)}): {len(unified)} unique players -> {OUT_PATH}")
     print(unified["sources_count"].value_counts().sort_index(ascending=False).rename("players per source-count"))
+    return unified
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Merge per-source FPL ranking CSVs into a unified ranking.")
+    parser.add_argument(
+        "--sources",
+        nargs="+",
+        choices=ALL_SOURCES,
+        default=ALL_SOURCES,
+        help="Which sources to include in the unified ranking (default: all).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    run(args.sources)
 
 
 if __name__ == "__main__":
