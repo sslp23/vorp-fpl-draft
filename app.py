@@ -10,15 +10,19 @@ import streamlit as st
 
 from vorp_engine import DEFAULT_DECAY, POSITIONS, compute_vorp
 
-DATA_PATH = Path(__file__).resolve().parent / "data" / "unified.csv"
-DRAFT_STATE_PATH = Path(__file__).resolve().parent / "data" / "draft_state.json"
+DATA_DIR = Path(__file__).resolve().parent / "data"
+RANKING_MODELS = {
+    "OFPL": DATA_DIR / "unified.csv",
+    "Sleeper": DATA_DIR / "unified_sleeper.csv",
+}
+DRAFT_STATE_PATH = DATA_DIR / "draft_state.json"
 
 st.set_page_config(page_title="FPL Draft VORP Board", layout="wide")
 
 
 @st.cache_data
-def load_unified() -> pd.DataFrame:
-    return pd.read_csv(DATA_PATH)
+def load_unified(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
 
 
 def load_drafted() -> list:
@@ -34,7 +38,15 @@ def save_drafted(drafted: list) -> None:
 if "drafted" not in st.session_state:
     st.session_state.drafted = load_drafted()
 
-st.title("FPL Draft VORP Board")
+with st.sidebar:
+    st.header("Ranking model")
+    model = st.radio("Source", options=list(RANKING_MODELS), horizontal=True, label_visibility="collapsed")
+    data_path = RANKING_MODELS[model]
+    if not data_path.exists():
+        st.error(f"{data_path.name} not found. Run pipeline.py (OFPL) or pipeline_sleeper.py (Sleeper) first.")
+        st.stop()
+
+st.title(f"FPL Draft VORP Board — {model}")
 
 with st.sidebar:
     st.header("League settings")
@@ -67,7 +79,7 @@ with st.sidebar:
         save_drafted(st.session_state.drafted)
         st.rerun()
 
-raw = load_unified()
+raw = load_unified(str(data_path))
 board = compute_vorp(raw, num_teams, roster_spots, decay)
 
 available = board[~board["player"].isin(st.session_state.drafted)].sort_values("vorp", ascending=False)
