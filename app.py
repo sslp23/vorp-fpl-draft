@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from vorp_engine import POSITIONS, compute_vorp
+from vorp_engine import DEFAULT_DECAY, POSITIONS, compute_vorp
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "unified.csv"
 DRAFT_STATE_PATH = Path(__file__).resolve().parent / "data" / "draft_state.json"
@@ -39,13 +39,22 @@ st.title("FPL Draft VORP Board")
 with st.sidebar:
     st.header("League settings")
     num_teams = st.number_input("Number of teams", min_value=2, max_value=20, value=10)
-    st.caption("Starters per position (defines replacement level)")
-    starters = {
-        "GK": st.number_input("GK starters", min_value=0, max_value=3, value=1),
-        "DEF": st.number_input("DEF starters", min_value=0, max_value=8, value=4),
-        "MID": st.number_input("MID starters", min_value=0, max_value=8, value=4),
-        "FWD": st.number_input("FWD starters", min_value=0, max_value=6, value=2),
+    st.caption("Roster spots per position (full squad, defines replacement level)")
+    roster_spots = {
+        "GK": st.number_input("GK spots", min_value=0, max_value=4, value=2),
+        "DEF": st.number_input("DEF spots", min_value=0, max_value=10, value=5),
+        "MID": st.number_input("MID spots", min_value=0, max_value=10, value=5),
+        "FWD": st.number_input("FWD spots", min_value=0, max_value=8, value=3),
     }
+
+    decay = st.slider(
+        "Value curve steepness",
+        min_value=10.0,
+        max_value=150.0,
+        value=DEFAULT_DECAY,
+        help="Lower = top-ranked players are worth much more than everyone else. "
+        "Higher = value spreads out more evenly across rank.",
+    )
 
     st.header("Draft control")
     if st.session_state.drafted and st.button("Undo last pick"):
@@ -59,7 +68,7 @@ with st.sidebar:
         st.rerun()
 
 raw = load_unified()
-board = compute_vorp(raw, num_teams, starters)
+board = compute_vorp(raw, num_teams, roster_spots, decay)
 
 available = board[~board["player"].isin(st.session_state.drafted)].sort_values("vorp", ascending=False)
 drafted_df = board[board["player"].isin(st.session_state.drafted)]
